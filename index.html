@@ -187,6 +187,11 @@
   table.totals td.changed{background:rgba(240,165,55,0.10);}
   .real-note{font-size:10.5px; color:var(--muted); font-family:monospace; margin-top:2px; white-space:nowrap;}
   .summary-overlay[hidden]{display:none !important;}
+
+  .time-edit-row{display:flex; gap:10px; align-items:center; margin-bottom:6px;}
+  .time-edit-row input{flex:1; min-width:0; padding:10px; border-radius:9px; border:1px solid var(--amber); background:var(--bg);
+    color:var(--amber); color-scheme:dark; font-family:"SF Mono","Courier New",monospace; font-size:22px; font-weight:700; text-align:center;}
+  .time-edit-row .btn{flex:1; padding:12px;}
 </style>
 </head>
 <body>
@@ -248,7 +253,7 @@
 
     <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
       <span>Registros de hoje</span>
-      <button class="reset-btn" id="editStationBtn" style="text-transform:none; letter-spacing:0; padding:6px 10px; font-size:11.5px;">Editar estação</button>
+      <button class="reset-btn" id="editStationBtn" style="text-transform:none; letter-spacing:0; padding:6px 10px; font-size:11.5px;">Editar registros</button>
     </div>
     <div class="events-list" id="eventsList"></div>
     <div class="finalize-panel" id="stationEditPanel" hidden></div>
@@ -308,14 +313,16 @@
     <div class="summary-sub" id="summarySub"></div>
     <div id="summaryTable"></div>
     <div class="summary-notes" id="summaryNotes"></div>
-    <button type="button" class="btn confirm" id="summaryCloseBtn" style="width:100%; margin-top:22px;">Fechar</button>
+    <button type="button" class="btn confirm" id="summaryCloseBtn" style="width:100%; margin-top:22px;">Continuar</button>
   </div>
 </div>
 
 <script>
-const APP_VERSION = 'v2026-10-30-02';
-const STATIONS = ['1','2','3A','3B','4'];
-const STATION_LABELS = { '1':'静電', '2':'電着', '3A':'修正', '3B':'全検', '4':'そのほか' };
+const APP_VERSION = 'v2026-11-03-01';
+const STATIONS = ['1','2','3A','3B','4','M'];
+const MAINT_STATION = 'M';              // メンテン
+const MAINT_COMPENSATE_STATION = '3A';  // 修正: absorve todos os ajustes do メンテン
+const STATION_LABELS = { '1':'静電', '2':'電着', '3A':'修正', '3B':'全検', '4':'そのほか', 'M':'メンテン' };
 function labelFor(s){ return STATION_LABELS[s] || s; }
 const BREAKS = [
   ['09:00','09:10'],
@@ -768,7 +775,7 @@ function showLogoutWarning(endTime){
 // ---- Resumo ao finalizar: 電着 arredondado de 15 em 15 min (só para exibir; o histórico guarda o horário real) ----
 const ROUND_STATION = '2';   // 電着
 const ROUND_STEP_MIN = 15;
-let summaryPending = false;
+let logoutPending = false;
 
 // Arredonda o tempo de 電着 (teiji e zangyo, cada um) para o múltiplo de 15 min mais próximo e compensa a diferença
 // na próxima estação com horas naquela categoria (mesma regra do painel de ajuste). Não altera nada salvo.
@@ -784,6 +791,7 @@ function buildRoundedTotals(real){
     if(delta === 0) return;
     let nextS = null;
     for(let j = idx + 1; j < STATIONS.length; j++){
+      if(STATIONS[j] === MAINT_STATION) continue; // メンテン só se ajusta com o 修正
       if(real[STATIONS[j]][cat] !== 0){ nextS = STATIONS[j]; break; }
     }
     if(nextS){
@@ -839,16 +847,16 @@ function showFinalSummary(){
   el.summaryOverlay.hidden = false;
   el.summaryOverlay.scrollTop = 0;
 }
-el.summaryCloseBtn.addEventListener('click', () => { el.summaryOverlay.hidden = true; });
-
-// o resumo aparece depois que o aviso de logout é dispensado
-el.logoutDoneBtn.addEventListener('click', () => {
-  el.logoutOverlay.hidden = true;
-  if(summaryPending){
-    summaryPending = false;
-    showFinalSummary();
+el.summaryCloseBtn.addEventListener('click', () => {
+  el.summaryOverlay.hidden = true;
+  // o aviso de logout vem por último, depois dos totais
+  if(logoutPending){
+    logoutPending = false;
+    showLogoutWarning(new Date(dayData.finalizedAt));
   }
 });
+
+el.logoutDoneBtn.addEventListener('click', () => { el.logoutOverlay.hidden = true; });
 
 async function confirmFinalize(){
   if(!endChoice){
@@ -876,8 +884,8 @@ async function confirmFinalize(){
   closeFinalizePanel();
   saveDay();
   render();
-  summaryPending = true;
-  showLogoutWarning(endTime);
+  logoutPending = true;
+  showFinalSummary();
 }
 el.confirmFinalizeBtn.addEventListener('click', confirmFinalize);
 
@@ -912,13 +920,21 @@ function renderEventsList(){
 function openStationEditPanel(idx){
   const ev = dayData.events[idx];
   el.stationEditPanel.hidden = false;
-  let html = '<div style="font-size:14px; margin-bottom:12px;">Trocar <b>' + labelFor(ev.station) + '</b> das ' + fmtHM(new Date(ev.time)) + ' para:</div>';
+  const curHM = fmtHM(new Date(ev.time));
+  let html = '<div style="font-size:14px; margin-bottom:12px;"><b>' + labelFor(ev.station) + '</b> · entrada às ' + curHM + '</div>';
+  html += '<div class="section-label" style="margin-top:0;">Horário de entrada</div>' +
+    '<div class="time-edit-row"><input type="time" id="evTimeInput" value="' + curHM + '">' +
+    '<button type="button" class="btn confirm" id="saveEvTimeBtn">Salvar horário</button></div>' +
+    '<div class="section-label">Trocar estação</div>';
   html += '<div class="stations-grid" style="margin-bottom:12px;">';
   STATIONS.forEach(s => {
     html += '<button class="pick-btn" data-pick="' + s + '" style="' + (s === ev.station ? 'opacity:0.4;' : '') + '">' + labelFor(s) + '<small>' + s + '</small></button>';
   });
   html += '</div><div class="actions" style="margin-top:0;"><button class="btn" id="cancelStationEditBtn">Cancelar</button></div>';
   el.stationEditPanel.innerHTML = html;
+  document.getElementById('saveEvTimeBtn').addEventListener('click', () => {
+    saveEventTime(idx, document.getElementById('evTimeInput').value);
+  });
   el.stationEditPanel.querySelectorAll('[data-pick]').forEach(btn => {
     btn.addEventListener('click', () => {
       const newStation = btn.dataset.pick;
@@ -935,6 +951,44 @@ function openStationEditPanel(idx){
   });
   document.getElementById('cancelStationEditBtn').addEventListener('click', closeStationEditPanel);
 }
+// corrige a hora de entrada de um registro (ex.: esqueceu de trocar de estação a tempo)
+function saveEventTime(idx, hhmm){
+  const ev = dayData.events[idx];
+  if(!ev) return;
+  if(!/^\d{2}:\d{2}$/.test(hhmm || '')){
+    showStatus('Digite um horário válido.', true);
+    return;
+  }
+  const oldTime = new Date(ev.time);
+  if(fmtHM(oldTime) === hhmm){ closeStationEditPanel(); return; } // nada mudou
+  const newTime = timeOnDate(dayData.date, hhmm);
+  const prev = dayData.events[idx-1], next = dayData.events[idx+1];
+  if(prev && newTime <= new Date(prev.time)){
+    showStatus('O horário precisa ser depois do registro anterior (' + fmtHM(new Date(prev.time)) + ').', true);
+    return;
+  }
+  if(next && newTime >= new Date(next.time)){
+    showStatus('O horário precisa ser antes do próximo registro (' + fmtHM(new Date(next.time)) + ').', true);
+    return;
+  }
+  if(!next){
+    if(dayData.finalized){
+      if(newTime >= new Date(dayData.finalizedAt)){
+        showStatus('O horário precisa ser antes do fim do serviço (' + fmtHM(new Date(dayData.finalizedAt)) + ').', true);
+        return;
+      }
+    } else if(newTime > new Date()){
+      showStatus('O horário não pode ser no futuro.', true);
+      return;
+    }
+  }
+  ev.time = newTime.toISOString();
+  logAction('Corrigiu a entrada em ' + labelFor(ev.station) + ': ' + fmtHM(oldTime) + ' → ' + hhmm);
+  saveDay();
+  render();
+  closeStationEditPanel();
+  showStatus('Horário de entrada corrigido para ' + hhmm + '.');
+}
 function closeStationEditPanel(){
   el.stationEditPanel.hidden = true;
   el.stationEditPanel.innerHTML = '';
@@ -950,12 +1004,12 @@ function openAdjustPanel(){
   if(editStationMode){
     editStationMode = false;
     closeStationEditPanel();
-    document.getElementById('editStationBtn').textContent = 'Editar estação';
+    document.getElementById('editStationBtn').textContent = 'Editar registros';
   }
   adjustMode = true;
   document.getElementById('editTimesBtn').textContent = 'Fechar ajuste';
   el.adjustHint.hidden = false;
-  el.adjustHint.textContent = 'Ordem fixa: 1 → 2 → 3A → 3B → 4. Teiji e zangyo são grupos independentes — cada um pula estações zeradas naquela categoria ao procurar a próxima pra compensar. Nunca mexe no horário final.';
+  el.adjustHint.textContent = 'Ordem fixa: 1 → 2 → 3A → 3B → 4. Teiji e zangyo são grupos independentes — cada um pula estações zeradas naquela categoria ao procurar a próxima pra compensar. Exceção: o que mudar no メンテン é descontado do 修正. Nunca mexe no horário final.';
   el.adjustActions.hidden = false;
   render();
   const snapshot = getAdjustedTotals();
@@ -1009,10 +1063,16 @@ function saveAdjustPanel(){
       if(!draft[s]) draft[s] = {teiji:0, zangyo:0};
       draft[s][category] = (draft[s][category]||0) + delta;
 
-      // acha a próxima estação da lista com horas nessa categoria (pulando as zeradas)
+      // acha a estação que compensa: o メンテン sempre desconta do 修正; as outras usam a próxima da lista
+      // com horas nessa categoria (pulando as zeradas e sem nunca usar o メンテン)
       let targetIdx = -1;
-      for(let j = i+1; j < STATIONS.length; j++){
-        if(origValues[j] !== 0){ targetIdx = j; break; }
+      if(s === MAINT_STATION){
+        targetIdx = STATIONS.indexOf(MAINT_COMPENSATE_STATION);
+      } else {
+        for(let j = i+1; j < STATIONS.length; j++){
+          if(STATIONS[j] === MAINT_STATION) continue;
+          if(origValues[j] !== 0){ targetIdx = j; break; }
+        }
       }
       if(targetIdx !== -1){
         const next = STATIONS[targetIdx];
@@ -1182,7 +1242,7 @@ document.getElementById('editStationBtn').addEventListener('click', () => {
   if(adjustMode) closeAdjustPanel();
   editStationMode = !editStationMode;
   closeStationEditPanel();
-  document.getElementById('editStationBtn').textContent = editStationMode ? 'Concluir edição' : 'Editar estação';
+  document.getElementById('editStationBtn').textContent = editStationMode ? 'Concluir edição' : 'Editar registros';
   render();
 });
 document.getElementById('editTimesBtn').addEventListener('click', () => {
