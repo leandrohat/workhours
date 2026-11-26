@@ -180,12 +180,7 @@
   .summary-overlay{position:fixed; top:0; left:0; right:0; bottom:0; z-index:900; overflow-y:auto;
     background:var(--bg); padding:24px 16px 32px;}
   .summary-box{max-width:480px; margin:0 auto;}
-  .summary-title{font-size:22px; font-weight:800; color:var(--amber);}
-  .summary-sub{margin:6px 0 10px; font-size:13px; line-height:1.4; color:var(--muted);}
-  .summary-notes{margin-top:12px; font-size:12.5px; line-height:1.4; color:var(--muted);}
-  .summary-notes .warn{color:#ff8f86; margin-top:6px;}
-  table.totals td.changed{background:rgba(240,165,55,0.10);}
-  .real-note{font-size:10.5px; color:var(--muted); font-family:monospace; margin-top:2px; white-space:nowrap;}
+  .summary-title{font-size:22px; font-weight:800; color:var(--amber); margin-bottom:10px;}
   .summary-overlay[hidden]{display:none !important;}
 
   .time-edit-row{display:flex; gap:10px; align-items:center; margin-bottom:6px;}
@@ -310,15 +305,13 @@
 <div id="summaryOverlay" class="summary-overlay" role="dialog" aria-modal="true" aria-labelledby="summaryTitle" hidden>
   <div class="summary-box">
     <div class="summary-title" id="summaryTitle">Totais do dia</div>
-    <div class="summary-sub" id="summarySub"></div>
     <div id="summaryTable"></div>
-    <div class="summary-notes" id="summaryNotes"></div>
     <button type="button" class="btn confirm" id="summaryCloseBtn" style="width:100%; margin-top:22px;">Continuar</button>
   </div>
 </div>
 
 <script>
-const APP_VERSION = 'v2026-11-03-01';
+const APP_VERSION = 'v2026-11-22-01';
 const STATIONS = ['1','2','3A','3B','4','M'];
 const MAINT_STATION = 'M';              // メンテン
 const MAINT_COMPENSATE_STATION = '3A';  // 修正: absorve todos os ajustes do メンテン
@@ -520,9 +513,7 @@ const el = {
   logoutSub: document.getElementById('logoutSub'),
   logoutDoneBtn: document.getElementById('logoutDoneBtn'),
   summaryOverlay: document.getElementById('summaryOverlay'),
-  summarySub: document.getElementById('summarySub'),
   summaryTable: document.getElementById('summaryTable'),
-  summaryNotes: document.getElementById('summaryNotes'),
   summaryCloseBtn: document.getElementById('summaryCloseBtn'),
   cancelFinalizeBtn: document.getElementById('cancelFinalizeBtn'),
   confirmFinalizeBtn: document.getElementById('confirmFinalizeBtn'),
@@ -772,78 +763,32 @@ function showLogoutWarning(endTime){
   el.logoutOverlay.hidden = false;
   el.logoutDoneBtn.focus();
 }
-// ---- Resumo ao finalizar: 電着 arredondado de 15 em 15 min (só para exibir; o histórico guarda o horário real) ----
-const ROUND_STATION = '2';   // 電着
-const ROUND_STEP_MIN = 15;
+// ---- Tela de Totais ao finalizar ----
 let logoutPending = false;
 
-// Arredonda o tempo de 電着 (teiji e zangyo, cada um) para o múltiplo de 15 min mais próximo e compensa a diferença
-// na próxima estação com horas naquela categoria (mesma regra do painel de ajuste). Não altera nada salvo.
-function buildRoundedTotals(real){
-  const adj = {};
-  STATIONS.forEach(s => { adj[s] = { teiji: real[s].teiji, zangyo: real[s].zangyo }; });
-  const skipped = [];
-  const idx = STATIONS.indexOf(ROUND_STATION);
-  ['teiji','zangyo'].forEach(cat => {
-    const realMin = Math.round(real[ROUND_STATION][cat] / 60000);
-    const target = Math.round(realMin / ROUND_STEP_MIN) * ROUND_STEP_MIN;
-    const delta = target - realMin;
-    if(delta === 0) return;
-    let nextS = null;
-    for(let j = idx + 1; j < STATIONS.length; j++){
-      if(STATIONS[j] === MAINT_STATION) continue; // メンテン só se ajusta com o 修正
-      if(real[STATIONS[j]][cat] !== 0){ nextS = STATIONS[j]; break; }
-    }
-    if(nextS){
-      const nextMin = Math.round(real[nextS][cat] / 60000);
-      if(nextMin - delta < 0){ skipped.push(cat); return; } // a próxima não tem tempo pra compensar
-      adj[nextS][cat] = (nextMin - delta) * 60000;
-    }
-    adj[ROUND_STATION][cat] = target * 60000;
-  });
-  return { adj, skipped };
-}
-
-function summaryTableHTML(adj, real){
-  const cell = (cls, a, r) => {
-    const changed = a !== r;
-    return '<td class="' + cls + (changed ? ' changed' : '') + '">' + fmtDur(a) +
-      (changed ? '<div class="real-note">real ' + fmtDur(r) + '</div>' : '') + '</td>';
-  };
-  const row = (label, a, r, cls) => '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td class="station-cell">' + label + '</td>' +
-    cell('teiji-cell', a.teiji, r.teiji) + cell('zangyo-cell', a.zangyo, r.zangyo) +
-    cell('total-cell', a.teiji + a.zangyo, r.teiji + r.zangyo) + '</tr>';
-  const isZero = t => t.teiji === 0 && t.zangyo === 0;
-  const sumOf = (t, list) => list.reduce((acc, s) => ({ teiji: acc.teiji + t[s].teiji, zangyo: acc.zangyo + t[s].zangyo }), { teiji:0, zangyo:0 });
-  let rows = '';
-  STATIONS.forEach(s => {
-    if(isZero(adj[s]) && isZero(real[s])) return;
-    rows += row(labelFor(s), adj[s], real[s]);
-  });
-  const a34 = sumOf(adj, ['3A','3B']), r34 = sumOf(real, ['3A','3B']);
-  if(!(isZero(a34) && isZero(r34))) rows += row(labelFor('3A') + ' + ' + labelFor('3B'), a34, r34, 'subtotal');
-  rows += row('Total', sumOf(adj, STATIONS), sumOf(real, STATIONS), 'grand');
-  return '<table class="totals"><thead><tr><th>Estação</th><th>Teiji</th><th>Zangyo</th><th>Total</th></tr></thead><tbody>' + rows + '</tbody></table>';
+function summaryTablesHTML(t){
+  const sum = list => list.reduce((acc, s) => ({ teiji: acc.teiji + t[s].teiji, zangyo: acc.zangyo + t[s].zangyo }), { teiji:0, zangyo:0 });
+  // tabela 1: 修正 e 全検, com teiji + zangyo somados
+  const totalRow = s => '<tr><td class="station-cell">' + labelFor(s) + '</td>' +
+    '<td class="total-cell">' + fmtDur(t[s].teiji + t[s].zangyo) + '</td></tr>';
+  const table1 = '<table class="totals"><thead><tr><th>Estação</th><th>Total</th></tr></thead><tbody>' +
+    totalRow('3A') + totalRow('3B') + '</tbody></table>';
+  // tabela 2: 静電, 電着, プーリー (= 修正 + 全検 + そのほか) e メンテン, com teiji e zangyo separados
+  const splitRow = (label, x) => '<tr><td class="station-cell">' + label + '</td>' +
+    '<td class="teiji-cell">' + fmtDur(x.teiji) + '</td>' +
+    '<td class="zangyo-cell">' + fmtDur(x.zangyo) + '</td></tr>';
+  const table2 = '<table class="totals" style="margin-top:22px;"><thead><tr><th>Estação</th><th>Teiji</th><th>Zangyo</th></tr></thead><tbody>' +
+    splitRow(labelFor('1'), t['1']) +
+    splitRow(labelFor('2'), t['2']) +
+    splitRow('プーリー', sum(['3A','3B','4'])) +
+    splitRow(labelFor('M'), t['M']) +
+    '</tbody></table>';
+  return table1 + table2;
 }
 
 function showFinalSummary(){
-  const real = getTotalsFor(dayData);
-  const { adj, skipped } = buildRoundedTotals(real);
-  const changes = [];
-  STATIONS.forEach(s => ['teiji','zangyo'].forEach(c => {
-    if(adj[s][c] !== real[s][c]) changes.push(s + '.' + c + ': ' + Math.round(real[s][c]/60000) + 'm → ' + Math.round(adj[s][c]/60000) + 'm');
-  }));
-  logAction('Resumo ao finalizar: ' + (changes.join('; ') || 'sem ajuste') + (skipped.length ? ' (sem compensação possível: ' + skipped.join(', ') + ')' : ''));
-  el.summarySub.textContent = labelFor(ROUND_STATION) + ' arredondado de ' + ROUND_STEP_MIN + ' em ' + ROUND_STEP_MIN +
-    ' min. Onde o horário mudou, o real aparece embaixo; o histórico guarda o real.';
-  el.summaryTable.innerHTML = summaryTableHTML(adj, real);
-  let notes = '';
-  if(changes.length === 0 && skipped.length === 0) notes += 'Nenhum ajuste foi necessário.';
-  skipped.forEach(cat => {
-    notes += '<div class="warn">' + (cat === 'teiji' ? 'Teiji' : 'Zangyo') + ' de ' + labelFor(ROUND_STATION) +
-      ' ficou sem ajuste: a próxima estação não tem tempo suficiente para compensar.</div>';
-  });
-  el.summaryNotes.innerHTML = notes;
+  logAction('Mostrou a tela de totais ao finalizar');
+  el.summaryTable.innerHTML = summaryTablesHTML(getTotalsFor(dayData));
   el.summaryOverlay.hidden = false;
   el.summaryOverlay.scrollTop = 0;
 }
